@@ -132,7 +132,7 @@ def main(pair, m, k, future_k):
 
 
 if __name__ == "__main__":
-    m = 100
+    m = 1
     for pair in ['BTCJPY']:
         for k in [360, 300, 240, 180, 120]:
             for i in [1, 2, 3]:
