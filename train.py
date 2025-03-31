@@ -45,6 +45,10 @@ def main(pair, m, k, future_k, down_sampling=1):
         train_ratio=0.6, valid_ratio=0.2, down_sampling=down_sampling
     )
 
+    window_sma = 20
+    window_rsi = 14
+    window_boll = 20
+
     # === 3. モデル定義 ===
     model_class_name = "LSTM_CNN_INDICATOR"
     # model_class_name = "TRANSFORMER"
@@ -52,7 +56,8 @@ def main(pair, m, k, future_k, down_sampling=1):
     input_dim = train_x.shape[1]
     # model = build_simple_affine_model(input_dim)
     # model = build_lstm_cnn_attention_model(input_dim)
-    model = build_lstm_cnn_attention_indicator_model(input_dim)
+    model = build_lstm_cnn_attention_indicator_model(
+        input_dim, window_sma=window_sma, window_rsi=window_rsi, window_boll=window_boll)
     # model = build_transformer_ti_model(input_dim)
 
     # === 4. 学習・評価のループ ===
@@ -124,7 +129,10 @@ def main(pair, m, k, future_k, down_sampling=1):
         'down_sampling': down_sampling,
         'Random_Init_Ratio': trainer.random_init_ratio,
         'learning_rate_initial': learning_rate_initial,
-        'learning_rate_final': learning_rate_final
+        'learning_rate_final': learning_rate_final,
+        'Sma': window_sma,
+        'Rsi': window_rsi,
+        'Boll': window_boll
     }
 
     # CSVに書き込み（存在しない場合はヘッダーも書き込み）
@@ -148,4 +156,4 @@ if __name__ == "__main__":
             for i in [1, 2, 3]:
                 future_k = int(k/i)
 
-                main(pair, m, k, future_k, down_sampling=100)
+                main(pair, m, k, future_k, down_sampling=20)

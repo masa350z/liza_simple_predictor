@@ -214,9 +214,9 @@ class TechnicalIndicatorLayer(tf.keras.layers.Layer):
     """
     Computes four channels of technical indicators from an input price sequence:
       1) Original price
-      2) SMA(5)
-      3) RSI(14)
-      4) Bollinger band width(20) = (UpperBand - LowerBand), where bands are mean ± 2*std
+      2) SMA(window_sma)
+      3) RSI(window_rsi)
+      4) Bollinger band width(window_boll) = (UpperBand - LowerBand), where bands are mean ± 2*std
 
     Input shape:
         (batch_size, seq_length)
@@ -225,126 +225,89 @@ class TechnicalIndicatorLayer(tf.keras.layers.Layer):
         (batch_size, seq_length, 4)
     """
 
-    def __init__(self):
+    def __init__(self, window_sma=20, window_rsi=14, window_boll=20):
         super().__init__()
-        # We'll build sub-layers (Conv1D) with fixed weights for SMA/Bollinger
-        # so they don't update during training.
-        # We define them in build() so that we know seq_length if needed.
+        self.window_sma = window_sma
+        self.window_rsi = window_rsi
+        self.window_boll = window_boll
 
     def build(self, input_shape):
-        # input_shape = (batch_size, seq_length)
-        # We reshape into (batch_size, seq_length, 1) inside call(), so build logic for kernels:
-
-        # 1) SMA(5) kernel
-        self.sma5_conv = tf.keras.layers.Conv1D(
+        # 1) SMA kernel
+        self.sma_conv = tf.keras.layers.Conv1D(
             filters=1,
-            kernel_size=5,
+            kernel_size=self.window_sma,
             padding='same',
             use_bias=False,
             trainable=False
         )
-        # set fixed weights = 1/5 for each kernel position
-        w_sma5 = np.ones((5, 1, 1), dtype=np.float32) / 5.0
-        # build for (batch, seq_length, 1)
-        self.sma5_conv.build((None, None, 1))
-        self.sma5_conv.set_weights([w_sma5])
+        w_sma = np.ones((self.window_sma, 1, 1),
+                        dtype=np.float32) / self.window_sma
+        self.sma_conv.build((None, None, 1))
+        self.sma_conv.set_weights([w_sma])
 
-        # 2) For Bollinger(20) => rolling mean of window=20
+        # 2) Bollinger mean kernel
         self.boll_mean_conv = tf.keras.layers.Conv1D(
             filters=1,
-            kernel_size=20,
+            kernel_size=self.window_boll,
             padding='same',
             use_bias=False,
             trainable=False
         )
-        w_boll_mean = np.ones((20, 1, 1), dtype=np.float32) / 20.0
+        w_boll_mean = np.ones((self.window_boll, 1, 1),
+                              dtype=np.float32) / self.window_boll
         self.boll_mean_conv.build((None, None, 1))
         self.boll_mean_conv.set_weights([w_boll_mean])
 
-        # 3) For Bollinger(20) => rolling mean of squared price (to get variance)
+        # 3) Bollinger variance kernel
         self.boll_var_conv = tf.keras.layers.Conv1D(
             filters=1,
-            kernel_size=20,
+            kernel_size=self.window_boll,
             padding='same',
             use_bias=False,
             trainable=False
         )
-        # same kernel shape, for squares
         self.boll_var_conv.build((None, None, 1))
-        self.boll_var_conv.set_weights([w_boll_mean])  # also 1/20
+        self.boll_var_conv.set_weights([w_boll_mean])
 
-        # No trainable variables here.
         super().build(input_shape)
 
     def call(self, inputs, **kwargs):
-        """
-        inputs shape: (batch_size, seq_length)
-        returns shape: (batch_size, seq_length, 4)
-        """
+        x = tf.expand_dims(inputs, axis=-1)  # (batch, seq, 1)
+        price = x
 
-        # Reshape => (batch, seq_len, 1)
-        x = tf.expand_dims(inputs, axis=-1)
+        sma = self.sma_conv(price)
 
-        # 1) Price
-        # We'll just keep the original price as channel #0
-        price = x  # shape: (batch, seq, 1)
-
-        # 2) SMA(5)
-        sma5 = self.sma5_conv(price)  # (batch, seq, 1)
-
-        # 3) RSI(14)
-        #   RSI(t) = 100 - 100 / (1 + RS)
-        #   RS = (Avg Gain) / (Avg Loss) over the last 14 steps
-        # We'll do the difference, then rolling average of positive/negative parts.
-
-        # delta shape: (batch, seq-1, 1)
         delta = price[:, 1:, :] - price[:, :-1, :]
-        # Pad delta to restore shape => (batch, seq, 1)
-        # front-pad to align indexes
         delta = tf.pad(delta, paddings=[[0, 0], [1, 0], [0, 0]])
 
-        gains = tf.clip_by_value(delta, 0.0, np.inf)  # positive part
-        losses = tf.clip_by_value(-delta, 0.0, np.inf)  # negative part
-
-        # We'll compute average gains/losses with a pool or conv1d with kernel size=14.
-        # For simplicity we do an avg_pool1d with window=14, stride=1, 'SAME' padding.
-        # That means each time-step sees roughly the average of 14 elements around it.
-        # We'll treat them similarly to "rolling average" with some edge effects.
+        gains = tf.clip_by_value(delta, 0.0, np.inf)
+        losses = tf.clip_by_value(-delta, 0.0, np.inf)
 
         gains_avg = tf.nn.avg_pool1d(
             gains,
-            ksize=14,
+            ksize=self.window_rsi,
             strides=1,
             padding='SAME'
-        )  # shape still (batch, seq, 1)
-
+        )
         losses_avg = tf.nn.avg_pool1d(
             losses,
-            ksize=14,
+            ksize=self.window_rsi,
             strides=1,
             padding='SAME'
         )
 
-        # RS = gains_avg / (losses_avg + epsilon)
-        # Avoid dividing by zero
         eps = tf.constant(1e-8, dtype=gains_avg.dtype)
         rs = gains_avg / (losses_avg + eps)
+        rsi = 100.0 - (100.0 / (1.0 + rs))
 
-        rsi = 100.0 - (100.0 / (1.0 + rs))  # shape (batch, seq, 1)
-
-        # 4) Bollinger band(20) => rolling mean ± 2 * rolling std
-        mean_20 = self.boll_mean_conv(price)   # (batch, seq, 1)
-        # squares:
+        mean_boll = self.boll_mean_conv(price)
         squares = price * price
-        mean_sq_20 = self.boll_var_conv(squares)  # E[X^2]
-        var_20 = mean_sq_20 - (mean_20 * mean_20)
-        std_20 = tf.sqrt(tf.maximum(var_20, 0.0))
-        # Bollinger width =  (mean + 2*std) - (mean - 2*std) = 4 * std
-        boll_width = 4.0 * std_20
+        mean_sq_boll = self.boll_var_conv(squares)
+        var_boll = mean_sq_boll - (mean_boll * mean_boll)
+        std_boll = tf.sqrt(tf.maximum(var_boll, 0.0))
+        boll_width = 4.0 * std_boll
 
-        # Concatenate them along last dim
-        # final shape => (batch, seq, 4)
-        out = tf.concat([price, sma5, rsi, boll_width], axis=-1)
+        out = tf.concat([price, sma, rsi, boll_width], axis=-1)
         return out
 
 
@@ -399,7 +362,7 @@ class SimpleAttention(tf.keras.layers.Layer):
 # Full Model: Parallel LSTM + CNN + Attention, with internal indicator generation
 ##############################################################################
 
-def build_lstm_cnn_attention_indicator_model(input_dim):
+def build_lstm_cnn_attention_indicator_model(input_dim, window_sma=20, window_rsi=14, window_boll=20):
     """
     Builds a parallel LSTM+CNN model that internally computes the following technical indicators:
       - SMA(5)
@@ -420,7 +383,8 @@ def build_lstm_cnn_attention_indicator_model(input_dim):
     input_layer = tf.keras.Input(shape=(input_dim,), name="price_input")
 
     # 2) Technical indicators
-    indicator_block = TechnicalIndicatorLayer()
+    indicator_block = TechnicalIndicatorLayer(
+        window_sma=window_sma, window_rsi=window_rsi, window_boll=window_boll)
     x_indicators = indicator_block(input_layer)  # shape (batch, seq, 4)
 
     # 3) LSTM branch
