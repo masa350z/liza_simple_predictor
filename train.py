@@ -8,7 +8,7 @@ import tensorflow as tf
 import csv
 
 from modules.trainer import Trainer
-from modules.models import build_simple_affine_model, build_lstm_cnn_attention_model, build_lstm_cnn_attention_indicator_model, build_transformer_ti_model
+from modules.models import build_lstm_cnn_attention_indicator_model
 from modules.dataset import create_dataset
 from modules.data_loader import load_csv_data
 
@@ -58,13 +58,16 @@ def main(pair, m, k, future_k, down_sampling=1):
     # === 4. 学習・評価のループ ===
     print("[INFO] Starting training process...")
 
+    learning_rate_initial = 1e-3
+    learning_rate_final = 1e-4
+
     trainer = Trainer(
         model=model,
         train_data=(train_x, train_y),
         valid_data=(valid_x, valid_y),
         test_data=(test_x, test_y),
-        learning_rate_initial=1e-3,
-        learning_rate_final=1e-4,
+        learning_rate_initial=learning_rate_initial,
+        learning_rate_final=learning_rate_final,
         switch_epoch=100,         # 学習率を切り替えるステップ数
         random_init_ratio=1e-4,   # バリデーション損失が改善しなくなった場合の部分的ランダム初期化率
         max_epochs=10000,
@@ -106,16 +109,22 @@ def main(pair, m, k, future_k, down_sampling=1):
 
     # CSVに記録する情報を整理
     csv_row = {
-        'Pair': pair,
         'Model_Name': output_dir,
+        'm': m,
+        'k': k,
+        'future_k': future_k,
         'Best_Validation_Loss': f"{trainer.best_val_loss:.6f}",
         'Best_Validation_Acc': f"{trainer.best_val_acc:.6f}",
         'Best_Test_Loss': f"{trainer.best_test_loss:.6f}",
         'Best_Test_Acc': f"{trainer.best_test_acc:.6f}",
-        'm': m,
-        'k': k,
-        'future_k': future_k,
-        'down_sampling': down_sampling
+        'Max_Epochs': trainer.max_epochs,
+        'Patience': trainer.patience,
+        'Early_Stop_Patience': trainer.early_stop_patience,
+        'Num_Repeats': trainer.num_repeats,
+        'down_sampling': down_sampling,
+        'Random_Init_Ratio': trainer.random_init_ratio,
+        'learning_rate_initial': learning_rate_initial,
+        'learning_rate_final': learning_rate_final
     }
 
     # CSVに書き込み（存在しない場合はヘッダーも書き込み）
@@ -139,4 +148,4 @@ if __name__ == "__main__":
             for i in [1, 2, 3]:
                 future_k = int(k/i)
 
-                main(pair, m, k, future_k, down_sampling=10)
+                main(pair, m, k, future_k, down_sampling=100)
