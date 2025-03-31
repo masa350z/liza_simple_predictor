@@ -20,7 +20,7 @@ if gpus:
         tf.config.experimental.set_memory_growth(gpu, True)
 
 
-def main(pair, m, k, future_k):
+def main(pair, m, k, future_k, down_sampling=1):
     """学習のメインフローを実行する関数。
 
     1. CSV読み込み (USDJPY or EURUSD)
@@ -42,7 +42,7 @@ def main(pair, m, k, future_k):
     print(f"[INFO] Creating dataset with k={k}, future_k={future_k}")
     (train_x, train_y), (valid_x, valid_y), (test_x, test_y) = create_dataset(
         prices, k, future_k,
-        train_ratio=0.6, valid_ratio=0.2, down_sampling=10
+        train_ratio=0.6, valid_ratio=0.2, down_sampling=down_sampling
     )
 
     # === 3. モデル定義 ===
@@ -69,7 +69,7 @@ def main(pair, m, k, future_k):
         random_init_ratio=1e-4,   # バリデーション損失が改善しなくなった場合の部分的ランダム初期化率
         max_epochs=10000,
         patience=10,              # validationが改善しなくなってから再初期化までの猶予回数
-        num_repeats=5,            # 学習→バリデーション→（初期化）を繰り返す試行回数
+        num_repeats=3,            # 学習→バリデーション→（初期化）を繰り返す試行回数
         batch_size=4000,
         early_stop_patience=25
     )
@@ -114,7 +114,8 @@ def main(pair, m, k, future_k):
         'Best_Test_Acc': f"{trainer.best_test_acc:.6f}",
         'm': m,
         'k': k,
-        'future_k': future_k
+        'future_k': future_k,
+        'down_sampling': down_sampling
     }
 
     # CSVに書き込み（存在しない場合はヘッダーも書き込み）
@@ -138,4 +139,4 @@ if __name__ == "__main__":
             for i in [1, 2, 3]:
                 future_k = int(k/i)
 
-                main(pair, m, k, future_k)
+                main(pair, m, k, future_k, down_sampling=10)
