@@ -46,8 +46,8 @@ def main(pair, m, k, future_k, down_sampling=1):
     )
 
     window_sma = 20
-    window_rsi = 28
-    window_boll = 60
+    window_rsi = 14
+    window_boll = 20
 
     # === 3. モデル定義 ===
     model_class_name = "LSTM_CNN_INDICATOR"
@@ -65,7 +65,7 @@ def main(pair, m, k, future_k, down_sampling=1):
 
     learning_rate_initial = 1e-3
     learning_rate_final = 1e-5
-    switch_epoch = 300
+    switch_epoch = 200
 
     trainer = Trainer(
         model=model,
@@ -79,7 +79,7 @@ def main(pair, m, k, future_k, down_sampling=1):
         max_epochs=10000,
         patience=10,              # validationが改善しなくなってから再初期化までの猶予回数
         num_repeats=3,            # 学習→バリデーション→（初期化）を繰り返す試行回数
-        batch_size=3000,
+        batch_size=10000,
         early_stop_patience=25
     )
 
@@ -151,10 +151,10 @@ def main(pair, m, k, future_k, down_sampling=1):
 
 
 if __name__ == "__main__":
-    m = 1
+    m = 3
     pair = 'BTCJPY'
-    k = 480
-    future_k = 120
+    k = 120
+    future_k = 40
 
     while True:
         main(pair, m, k, future_k, down_sampling=20)
