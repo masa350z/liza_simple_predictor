@@ -53,6 +53,7 @@ def create_dataset(prices,
         future_price_then = prices_arr[start_idx + k + future_k - 1]
         # 上昇 or 下降をラベル
         is_up = 1 if future_price_then > future_price_now else 0
+
         # one-hot化
         if is_up == 1:
             y = [1, 0]
@@ -72,12 +73,12 @@ def create_dataset(prices,
     if balance_class:
         # 4. クラスバランスを取る (UP=1とDOWN=1が同数になるようにサンプリング)
         data_array, label_array = _balance_up_down(data_array, label_array)
-    
+
     if normalize:
         # 5. 正規化 (最大値-最小値で割る)
         data_array = _minmax_scale(data_array)
         data_array = data_array.astype('float16')
-    
+
     if split:
         # 6. 学習/検証/テストに分割
         (train_x, train_y), (valid_x, valid_y), (test_x, test_y) = _split_data(

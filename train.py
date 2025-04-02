@@ -46,8 +46,8 @@ def main(pair, m, k, future_k, down_sampling=1):
     )
 
     window_sma = 20
-    window_rsi = 14
-    window_boll = 20
+    window_rsi = 28
+    window_boll = 60
 
     # === 3. モデル定義 ===
     model_class_name = "LSTM_CNN_INDICATOR"
@@ -64,7 +64,8 @@ def main(pair, m, k, future_k, down_sampling=1):
     print("[INFO] Starting training process...")
 
     learning_rate_initial = 1e-3
-    learning_rate_final = 1e-4
+    learning_rate_final = 1e-5
+    switch_epoch = 300
 
     trainer = Trainer(
         model=model,
@@ -73,12 +74,12 @@ def main(pair, m, k, future_k, down_sampling=1):
         test_data=(test_x, test_y),
         learning_rate_initial=learning_rate_initial,
         learning_rate_final=learning_rate_final,
-        switch_epoch=100,         # 学習率を切り替えるステップ数
+        switch_epoch=switch_epoch,         # 学習率を切り替えるステップ数
         random_init_ratio=1e-4,   # バリデーション損失が改善しなくなった場合の部分的ランダム初期化率
         max_epochs=10000,
         patience=10,              # validationが改善しなくなってから再初期化までの猶予回数
         num_repeats=3,            # 学習→バリデーション→（初期化）を繰り返す試行回数
-        batch_size=4000,
+        batch_size=3000,
         early_stop_patience=25
     )
 
@@ -122,12 +123,12 @@ def main(pair, m, k, future_k, down_sampling=1):
         'Best_Validation_Acc': f"{trainer.best_val_acc:.6f}",
         'Best_Test_Loss': f"{trainer.best_test_loss:.6f}",
         'Best_Test_Acc': f"{trainer.best_test_acc:.6f}",
-        'Max_Epochs': trainer.max_epochs,
         'Patience': trainer.patience,
         'Early_Stop_Patience': trainer.early_stop_patience,
         'Num_Repeats': trainer.num_repeats,
         'down_sampling': down_sampling,
         'Random_Init_Ratio': trainer.random_init_ratio,
+        'Switch_Eochs': switch_epoch,
         'learning_rate_initial': learning_rate_initial,
         'learning_rate_final': learning_rate_final,
         'Sma': window_sma,
@@ -151,9 +152,9 @@ def main(pair, m, k, future_k, down_sampling=1):
 
 if __name__ == "__main__":
     m = 1
-    for pair in ['BTCJPY']:
-        for k in [360, 300, 240, 180, 120]:
-            for i in [1, 2, 3]:
-                future_k = int(k/i)
+    pair = 'BTCJPY'
+    k = 480
+    future_k = 120
 
-                main(pair, m, k, future_k, down_sampling=20)
+    while True:
+        main(pair, m, k, future_k, down_sampling=20)
