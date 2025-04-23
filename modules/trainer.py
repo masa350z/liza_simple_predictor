@@ -114,7 +114,7 @@ class Trainer:
                 f"\n[INFO] ===== Start Repeat {repeat_i+1}/{self.num_repeats} =====")
 
             # まず最初に重みを初期化して開始(ベースライン)
-            self._init_model_weights()
+            # self._init_model_weights()
             # 学習を行う
             self._train_loop()
 

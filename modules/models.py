@@ -6,7 +6,7 @@
 """
 
 import tensorflow as tf
-from tensorflow.keras import layers, Model, Sequential
+from tensorflow.keras import layers, Model, Sequential, Input
 import numpy as np
 
 
@@ -663,4 +663,73 @@ def build_transformer_ti_model(input_dim):
     model = tf.keras.Model(
         inputs=price_input, outputs=out, name="TNN_BB_ATR_model")
 
+    return model
+
+
+def build_hybrid_technical_model(seq_len) -> tf.keras.Model:
+    """
+    入力 shape: (None, seq_len, 12)  – 正規化済みデータ
+      0   : price
+      1-6 : SMA diff 6ch
+      7-9 : Bollinger diff 3ch
+     10   : MACD diff
+     11   : RSI (−1〜+1)
+    出力: 上昇 / 下降 2クラス Softmax
+    """
+    inp = Input(shape=(seq_len, 12), name="input")
+
+    # ------------- スライス -----------------
+    price = layers.Lambda(lambda x: x[...,  0: 1])(inp)  # (B, L, 1)
+    sma = layers.Lambda(lambda x: x[...,  1: 7])(inp)  # (B, L, 6)
+    boll = layers.Lambda(lambda x: x[...,  7:10])(inp)  # (B, L, 3)
+    macd = layers.Lambda(lambda x: x[..., 10:11])(inp)  # (B, L, 1)
+    rsi = layers.Lambda(lambda x: x[..., 11:12])(inp)  # (B, L, 1)
+
+    # ------------- Price branch (Conv→GRU) -------------
+    x_p = layers.Conv1D(32, 3, padding="causal", activation="relu")(price)
+    x_p = layers.Conv1D(32, 3, padding="causal", dilation_rate=2,
+                        activation="relu")(x_p)
+    x_p = layers.GRU(64, return_sequences=False)(x_p)          # (B, 64)
+    x_p = layers.Dense(32, activation="relu")(x_p)             # (B, 32)
+
+    # ------------- SMA branch (Conv×2→GAP) -------------
+    x_s = layers.Conv1D(32, 3, padding="causal", activation="relu")(sma)
+    x_s = layers.Conv1D(32, 3, padding="causal", activation="relu")(x_s)
+    x_s = layers.GlobalAveragePooling1D()(x_s)                 # (B, 32)
+    x_s = layers.Dense(32, activation="relu")(x_s)
+
+    # ------------- Boll branch (軽量Conv→GAP) ----------
+    x_b = layers.Conv1D(16, 3, padding="causal", activation="relu")(boll)
+    x_b = layers.GlobalAveragePooling1D()(x_b)                 # (B, 16)
+    x_b = layers.Dense(32, activation="relu")(x_b)             # (B, 32)
+
+    # ------------- MACD branch (GRU) -------------------
+    x_m = layers.GRU(32, return_sequences=False)(macd)         # (B, 32)
+    x_m = layers.Dense(32, activation="relu")(x_m)
+
+    # ------------- RSI branch (Conv→GAP) ---------------
+    x_r = layers.Conv1D(8, 3, padding="causal", activation="relu")(rsi)
+    x_r = layers.GlobalAveragePooling1D()(x_r)                 # (B, 8)
+    x_r = layers.Dense(32, activation="relu")(x_r)
+
+    # ------------- 統合 (Add or Concat) ----------------
+    fused = layers.Add()([x_p, x_s, x_b, x_m, x_r])            # (B, 32)
+    # ─ または Concatenate の場合は次行に差し替え
+    # fused = layers.Concatenate()([x_p, x_s, x_b, x_m, x_r])  # (B, 160)
+
+    # ------------- 全結合ヘッド ------------------------
+    x = layers.BatchNormalization()(fused)
+    x = layers.Dropout(0.2)(x)
+    x = layers.Dense(64, activation="relu")(x)
+    x = layers.Dropout(0.2)(x)
+    x = layers.Dense(32, activation="relu")(x)
+
+    out = layers.Dense(2, activation="softmax", name="direction")(x)
+
+    model = Model(inputs=inp, outputs=out, name="Hybrid_TISplit_Model")
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(1e-3),
+        loss="categorical_crossentropy",
+        metrics=["accuracy"]
+    )
     return model
