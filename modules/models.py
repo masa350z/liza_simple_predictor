@@ -668,12 +668,12 @@ def build_transformer_ti_model(input_dim):
 
 def build_hybrid_technical_model(seq_len) -> tf.keras.Model:
     """
-    入力 shape: (None, seq_len, 12)  – 正規化済みデータ
+    入力 shape: (None, seq_len, 12)  - 正規化済みデータ
       0   : price
       1-6 : SMA diff 6ch
       7-9 : Bollinger diff 3ch
      10   : MACD diff
-     11   : RSI (−1〜+1)
+     11   : RSI (-1〜+1)
     出力: 上昇 / 下降 2クラス Softmax
     """
     inp = Input(shape=(seq_len, 12), name="input")
@@ -713,9 +713,9 @@ def build_hybrid_technical_model(seq_len) -> tf.keras.Model:
     x_r = layers.Dense(32, activation="relu")(x_r)
 
     # ------------- 統合 (Add or Concat) ----------------
-    fused = layers.Add()([x_p, x_s, x_b, x_m, x_r])            # (B, 32)
+    # fused = layers.Add()([x_p, x_s, x_b, x_m, x_r])            # (B, 32)
     # ─ または Concatenate の場合は次行に差し替え
-    # fused = layers.Concatenate()([x_p, x_s, x_b, x_m, x_r])  # (B, 160)
+    fused = layers.Concatenate()([x_p, x_s, x_b, x_m, x_r])  # (B, 160)
 
     # ------------- 全結合ヘッド ------------------------
     x = layers.BatchNormalization()(fused)
@@ -732,4 +732,47 @@ def build_hybrid_technical_model(seq_len) -> tf.keras.Model:
         loss="categorical_crossentropy",
         metrics=["accuracy"]
     )
+    return model
+
+
+def build_hybrid_technical_model_(seq_len) -> tf.keras.Model:
+    """
+    入力 shape: (None, seq_len, 12)  - 正規化済みデータ
+      0   : price
+      1-6 : SMA diff 6ch
+      7-9 : Bollinger diff 3ch
+     10   : MACD diff
+     11   : RSI (-1〜+1)
+    出力: 上昇 / 下降 2クラス Softmax
+    """
+    input_layer = Input(shape=(seq_len, 12), name="input")
+
+    # 3) LSTM branch
+    x_lstm = tf.keras.layers.LSTM(64, return_sequences=False)(
+        input_layer)  # (batch, 64)
+
+    # 4) CNN branch
+    x_cnn = tf.keras.layers.Conv1D(
+        filters=32, kernel_size=3, padding="causal", activation="relu")(input_layer)
+    x_cnn = tf.keras.layers.Conv1D(
+        filters=64, kernel_size=3, padding="causal", activation="relu")(x_cnn)
+    x_cnn = tf.keras.layers.GlobalAveragePooling1D()(x_cnn)  # (batch, 64)
+
+    # 5) Attention
+    att_layer = SimpleAttention(hidden_dim=64)
+    x_att = att_layer([x_lstm, x_cnn])  # (batch, 64)
+
+    # 6) Final dense
+    x_dense = tf.keras.layers.Dense(32, activation="relu")(x_att)
+    output_layer = tf.keras.layers.Dense(2, activation="softmax")(x_dense)
+
+    # 7) Model compile
+    model = tf.keras.Model(inputs=input_layer, outputs=output_layer,
+                           name="Parallel_LSTM_CNN_Attention_Model")
+    model.compile(
+        loss="categorical_crossentropy",
+        optimizer="adam",
+        metrics=["accuracy"]
+    )
+
     return model

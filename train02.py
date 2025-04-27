@@ -1,13 +1,13 @@
 # %%
 from modules.trainer import Trainer
 from technical_funcs import calc_sma, calc_bollinger_bands, calc_macd, calc_rsi
-from tensorflow.keras import layers, Model, Input
 import tensorflow as tf
-import pandas as pd
+import csv
 import os
 import numpy as np
-import matplotlib.pyplot as plt
+from datetime import datetime
 from modules.data_loader import load_csv_data
+from modules.dataset import _balance_up_down
 from modules.models import build_hybrid_technical_model
 
 # 必要な分だけGPUメモリを確保する
@@ -17,30 +17,60 @@ if gpus:
         tf.config.experimental.set_memory_growth(gpu, True)
 
 
-def normalize_by_price_window(data, rsi_idx=11, eps=1e-8):
-    """
-    破壊的に正規化を行う（in-place）
-    data : np.ndarray, shape = (N, k, 12)
-           チャネル構成:
-             0   : price
-             1-10: テクニカル（差分）
-             11  : RSI (0〜100)
-    返値 : 正規化された同じ data (in-place 処理)
-    """
-    prices = data[:, :, 0]                           # (N, k)
-    mean_p = np.mean(prices, axis=1, keepdims=True)  # (N, 1)
-    std_p = np.std(prices, axis=1, keepdims=True) + eps  # (N, 1)
+def make_hybrid_technical_model_data(prices,
+                                     k, p,
+                                     sma_short_window,
+                                     sma_mid_window,
+                                     sma_long_window,
+                                     bollinger_band_window,
+                                     bollinger_band_sigma,
+                                     macd_short_window,
+                                     macd_long_window,
+                                     macd_signal_window,
+                                     rsi_window):
 
-    # z-score normalize for price
-    data[:, :, 0] = (prices - mean_p) / std_p
+    # 1) SMA
+    sma_short = calc_sma(prices, sma_short_window)
+    sma_mid = calc_sma(prices, sma_mid_window)
+    sma_long = calc_sma(prices, sma_long_window)
 
-    # normalize diff indicators (sma, boll, macd)
-    data[:, :, 1:rsi_idx] /= std_p[:, :, None]       # (N, k, 10)
+    # 2) Bollinger Bands
+    bollinger_band_center, bollinger_band_upper, bollinger_band_lower = calc_bollinger_bands(
+        prices, bollinger_band_window, bollinger_band_sigma)
 
-    # normalize RSI to [-1, 1]
-    data[:, :, rsi_idx] = (data[:, :, rsi_idx] - 50.0) / 50.0
+    # 3) MACD
+    macd_line, signal_line = calc_macd(
+        prices, short_window=macd_short_window, long_window=macd_long_window, signal_window=macd_signal_window)
 
-    return data
+    # 4) RSI
+    rsi = calc_rsi(prices, window=rsi_window)
+
+    bollinger_bands = np.stack(
+        [bollinger_band_center, bollinger_band_upper, bollinger_band_lower], axis=1)
+    macds = np.stack([macd_line, signal_line], axis=1)
+
+    short_mid = sma_short - sma_mid
+    short_long = sma_short - sma_long
+    mid_short = sma_mid - sma_short
+    mid_long = sma_mid - sma_long
+    long_short = sma_long - sma_short
+    long_mid = sma_long - sma_mid
+    smas = np.stack([short_mid, short_long,
+                    mid_short, mid_long,
+                    long_short, long_mid], axis=1)
+
+    bollinger_bands_input = bollinger_bands - prices.reshape(-1, 1)
+    macds_input = macds[:, 0] - macds[:, 1]
+
+    input_array = np.concatenate(
+        [prices.reshape(-1, 1), smas, bollinger_bands_input, macds_input.reshape(-1, 1), rsi.reshape(-1, 1)], axis=1
+    )
+
+    normed_array, label_array = build_dataset_with_normalization_in_batches(
+        input_array, k=k, p=p, batch_size=10000
+    )
+
+    return normed_array, label_array
 
 
 def build_dataset_with_normalization_in_batches(input_array,
@@ -50,13 +80,13 @@ def build_dataset_with_normalization_in_batches(input_array,
                                                 rsi_idx=11,
                                                 eps=1e-8):
     """
-    ミニバッチで (N, k, 12) の正規化済みデータとラベルを生成（出力は float16）
+    ミニバッチで (N, k, 12) の正規化済みデータとラベルを生成(出力は float16)
 
-    input_array: (T, 12) 価格 + テクニカル指標（RSIはインデックス11に想定）
+    input_array: (T, 12) 価格 + テクニカル指標(RSIはインデックス11に想定)
     k: 入力系列長
     p: future予測系列差分
     batch_size: スライス単位の処理件数
-    rsi_idx: RSIのチャネル位置（デフォルト: 11）
+    rsi_idx: RSIのチャネル位置(デフォルト: 11)
     eps: ゼロ割回避定数
 
     戻り値:
@@ -102,13 +132,93 @@ def build_dataset_with_normalization_in_batches(input_array,
     return data_array, label_array
 
 
+def split_data(data, train_ratio=0.6, valid_ratio=0.2):
+    """
+    データをトレーニング、バリデーション、テストセットに分割する関数
+    """
+    train_size = int(len(data) * train_ratio)
+    valid_size = int(len(data) * valid_ratio)
+    test_size = len(data) - train_size - valid_size
+
+    train_data = data[:train_size]
+    valid_data = data[train_size:train_size + valid_size]
+    test_data = data[train_size + valid_size:]
+
+    return train_data, valid_data, test_data
+
+
+def save_csv():
+    # === 5. 保存用フォルダ作成 & 結果出力 ===
+    # サブディレクトリ: "results/{pair}/{ModelClass}_{YYYYMMDD-HHMMSS}/"
+    now_str = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+    # ディレクトリ名に k, future_k の値を埋め込む
+    model_name = f"m{m}_k{k}_f{p}_{now_str}"
+    output_dir = os.path.join(
+        "results",
+        pair,
+        model_class_name,
+        model_name
+    )
+    os.makedirs(output_dir, exist_ok=True)
+
+    # bestモデルの重み保存
+    best_weights_path = os.path.join(output_dir, "best_model.weights.h5")
+    trainer.save_best_weights(best_weights_path)
+
+    # === 6. 結果をCSVにまとめて出力 ===
+    csv_path = os.path.join(
+        "results", pair, f"training_results_{model_class_name}.csv")
+
+    # ディレクトリが存在しない場合は作成
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+
+    # ファイルが存在するかチェック
+    file_exists = os.path.isfile(csv_path)
+
+    # CSVに記録する情報を整理
+    csv_row = {
+        'Model_Name': output_dir,
+        'm': m,
+        'k': k,
+        'future_k': p,
+        'Best_Validation_Loss': f"{trainer.best_val_loss:.6f}",
+        'Best_Validation_Acc': f"{trainer.best_val_acc:.6f}",
+        'Best_Test_Loss': f"{trainer.best_test_loss:.6f}",
+        'Best_Test_Acc': f"{trainer.best_test_acc:.6f}",
+        'Patience': trainer.patience,
+        'Early_Stop_Patience': trainer.early_stop_patience,
+        'Num_Repeats': trainer.num_repeats,
+        'down_sampling': skip_num,
+        'Random_Init_Ratio': trainer.random_init_ratio,
+        'Switch_Eochs': switch_epoch,
+        'learning_rate_initial': learning_rate_initial,
+        'learning_rate_final': learning_rate_final,
+        'SMA': f"{sma_short_window}, {sma_mid_window}, {sma_long_window}",
+        'BOLL': f"{bollinger_band_window}, {bollinger_band_sigma}",
+        'MACD': f"{macd_short_window}, {macd_long_window}, {macd_signal_window}",
+        'RSI': f"{rsi_window}",
+    }
+
+    # CSVに書き込み（存在しない場合はヘッダーも書き込み）
+    with open(csv_path, 'a', newline='', encoding='utf-8') as csvfile:
+        fieldnames = list(csv_row.keys())
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+
+        # ファイルが存在しない場合はヘッダーを書き込む
+        if not file_exists:
+            writer.writeheader()
+
+        writer.writerow(csv_row)
+
+    print(f"[INFO] Summary results appended to: {csv_path}")
+
+
 # %%
+m = 1
 pair = "BTCJPY"
 csv_file_name = f"sample_{pair}_1m.csv"
 csv_file_path = os.path.join("data", csv_file_name)
-_, prices_ = load_csv_data(csv_file_path, skip=1)
-
-prices = np.array(prices_, dtype=np.float32)
 
 k = 360
 p = 120
@@ -127,86 +237,70 @@ macd_signal_window = 9
 
 rsi_window = 14
 
-# 1) SMA
-sma_short = calc_sma(prices, sma_short_window)
-sma_mid = calc_sma(prices, sma_mid_window)
-sma_long = calc_sma(prices, sma_long_window)
-
-# 2) Bollinger Bands
-bollinger_band_center, bollinger_band_upper, bollinger_band_lower = calc_bollinger_bands(
-    prices, bollinger_band_window, bollinger_band_sigma)
-
-# 3) MACD
-macd_line, signal_line = calc_macd(
-    prices, short_window=macd_short_window, long_window=macd_long_window, signal_window=macd_signal_window)
-
-# 4) RSI
-rsi = calc_rsi(prices, window=rsi_window)
-
-bollinger_bands = np.stack(
-    [bollinger_band_center, bollinger_band_upper, bollinger_band_lower], axis=1)
-macds = np.stack([macd_line, signal_line], axis=1)
-
-short_mid = sma_short - sma_mid
-short_long = sma_short - sma_long
-mid_short = sma_mid - sma_short
-mid_long = sma_mid - sma_long
-long_short = sma_long - sma_short
-long_mid = sma_long - sma_mid
-smas = np.stack([short_mid, short_long,
-                 mid_short, mid_long,
-                 long_short, long_mid], axis=1)
-
-bollinger_bands_input = bollinger_bands - prices.reshape(-1, 1)
-macds_input = macds[:, 0] - macds[:, 1]
-
-input_array = np.concatenate(
-    [prices.reshape(-1, 1), smas, bollinger_bands_input, macds_input.reshape(-1, 1), rsi.reshape(-1, 1)], axis=1
-)
-
-normed_array, label_array = build_dataset_with_normalization_in_batches(
-    input_array, k=360, p=120, batch_size=10000
-)
-# %%
+model_class_name = "HybridTechnicalModel"
 model = build_hybrid_technical_model(seq_len=k)
-# %%
+
+_, prices_ = load_csv_data(csv_file_path, skip=1)
+prices = np.array(prices_, dtype=np.float32)[::m]
+data_x, data_y = make_hybrid_technical_model_data(prices,
+                                                  k, p,
+                                                  sma_short_window,
+                                                  sma_mid_window,
+                                                  sma_long_window,
+                                                  bollinger_band_window,
+                                                  bollinger_band_sigma,
+                                                  macd_short_window,
+                                                  macd_long_window,
+                                                  macd_signal_window,
+                                                  rsi_window
+                                                  )
+
 train_ratio = 0.6
 valid_ratio = 0.2
-train_size = int(len(normed_array) * train_ratio)
-valid_size = int(len(normed_array) * valid_ratio)
-test_size = len(normed_array) - train_size - valid_size
-train_x = normed_array[:train_size]
-train_y = label_array[:train_size]
-valid_x = normed_array[train_size:train_size + valid_size]
-valid_y = label_array[train_size:train_size + valid_size]
-test_x = normed_array[train_size + valid_size:]
-test_y = label_array[train_size + valid_size:]
+
+train_x, valid_x, test_x = split_data(
+    data_x, train_ratio=train_ratio, valid_ratio=valid_ratio)
+train_y, valid_y, test_y = split_data(
+    data_y, train_ratio=train_ratio, valid_ratio=valid_ratio)
+
+train_x, train_y = _balance_up_down(train_x, train_y)
+valid_x, valid_y = _balance_up_down(valid_x, valid_y)
+test_x, test_y = _balance_up_down(test_x, test_y)
 # %%
-train_x.shape
+skip_num = 100
+
+train_x = train_x[::skip_num]
+train_y = train_y[::skip_num]
+# valid_x = valid_x[::skip_num]
+# valid_y = valid_y[::skip_num]
+# test_x = test_x[::skip_num]
+# test_y = test_y[::skip_num]
 # %%
 print("[INFO] Starting training process...")
 
-learning_rate_initial = 1e-3
+learning_rate_initial = 1e-4
 learning_rate_final = 1e-5
 switch_epoch = 200
 
-trainer = Trainer(
-    model=model,
-    train_data=(train_x, train_y),
-    valid_data=(valid_x, valid_y),
-    test_data=(test_x, test_y),
-    learning_rate_initial=learning_rate_initial,
-    learning_rate_final=learning_rate_final,
-    switch_epoch=switch_epoch,         # 学習率を切り替えるステップ数
-    random_init_ratio=1e-4,   # バリデーション損失が改善しなくなった場合の部分的ランダム初期化率
-    max_epochs=10000,
-    patience=10,              # validationが改善しなくなってから再初期化までの猶予回数
-    num_repeats=3,            # 学習→バリデーション→（初期化）を繰り返す試行回数
-    batch_size=2000,
-    early_stop_patience=25
-)
+while True:
 
-trainer.run()
-print("[INFO] Training finished.")
+    trainer = Trainer(
+        model=model,
+        train_data=(train_x, train_y),
+        valid_data=(valid_x, valid_y),
+        test_data=(test_x, test_y),
+        learning_rate_initial=learning_rate_initial,
+        learning_rate_final=learning_rate_final,
+        switch_epoch=switch_epoch,         # 学習率を切り替えるステップ数
+        random_init_ratio=1e-4,   # バリデーション損失が改善しなくなった場合の部分的ランダム初期化率
+        max_epochs=10000,
+        patience=10,              # validationが改善しなくなってから再初期化までの猶予回数
+        num_repeats=1,            # 学習→バリデーション→(初期化)を繰り返す試行回数
+        batch_size=2000,
+        early_stop_patience=25
+    )
 
-# %%
+    trainer.run()
+    print("[INFO] Training finished.")
+
+    save_csv()
