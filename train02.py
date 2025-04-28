@@ -147,7 +147,7 @@ def split_data(data, train_ratio=0.6, valid_ratio=0.2):
     return train_data, valid_data, test_data
 
 
-def save_csv():
+def save_csv(best_val_loss, best_val_acc, best_test_loss, best_test_acc):
     # === 5. 保存用フォルダ作成 & 結果出力 ===
     # サブディレクトリ: "results/{pair}/{ModelClass}_{YYYYMMDD-HHMMSS}/"
     now_str = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -182,15 +182,12 @@ def save_csv():
         'm': m,
         'k': k,
         'future_k': p,
-        'Best_Validation_Loss': f"{trainer.best_val_loss:.6f}",
-        'Best_Validation_Acc': f"{trainer.best_val_acc:.6f}",
-        'Best_Test_Loss': f"{trainer.best_test_loss:.6f}",
-        'Best_Test_Acc': f"{trainer.best_test_acc:.6f}",
-        'Patience': trainer.patience,
+        'Best_Validation_Loss': f"{best_val_loss:.6f}",
+        'Best_Validation_Acc': f"{best_val_acc:.6f}",
+        'Best_Test_Loss': f"{best_test_loss:.6f}",
+        'Best_Test_Acc': f"{best_test_acc:.6f}",
         'Early_Stop_Patience': trainer.early_stop_patience,
-        'Num_Repeats': trainer.num_repeats,
         'down_sampling': skip_num,
-        'Random_Init_Ratio': trainer.random_init_ratio,
         'Switch_Eochs': switch_epoch,
         'learning_rate_initial': learning_rate_initial,
         'learning_rate_final': learning_rate_final,
@@ -271,19 +268,18 @@ skip_num = 100
 
 train_x = train_x[::skip_num]
 train_y = train_y[::skip_num]
-# valid_x = valid_x[::skip_num]
-# valid_y = valid_y[::skip_num]
-# test_x = test_x[::skip_num]
-# test_y = test_y[::skip_num]
+valid_x = valid_x[::skip_num]
+valid_y = valid_y[::skip_num]
+test_x = test_x[::skip_num]
+test_y = test_y[::skip_num]
 # %%
 print("[INFO] Starting training process...")
 
-learning_rate_initial = 1e-4
+learning_rate_initial = 1e-3
 learning_rate_final = 1e-5
 switch_epoch = 200
 
 while True:
-
     trainer = Trainer(
         model=model,
         train_data=(train_x, train_y),
@@ -292,15 +288,12 @@ while True:
         learning_rate_initial=learning_rate_initial,
         learning_rate_final=learning_rate_final,
         switch_epoch=switch_epoch,         # 学習率を切り替えるステップ数
-        random_init_ratio=1e-4,   # バリデーション損失が改善しなくなった場合の部分的ランダム初期化率
         max_epochs=10000,
-        patience=10,              # validationが改善しなくなってから再初期化までの猶予回数
-        num_repeats=1,            # 学習→バリデーション→(初期化)を繰り返す試行回数
-        batch_size=2000,
+        batch_size=4000,
         early_stop_patience=25
     )
 
-    trainer.run()
+    best_val_loss, best_val_acc, best_test_loss, best_test_acc = trainer.run()
     print("[INFO] Training finished.")
 
-    save_csv()
+    save_csv(best_val_loss, best_val_acc, best_test_loss, best_test_acc)

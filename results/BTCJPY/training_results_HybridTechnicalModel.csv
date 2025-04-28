@@ -1,0 +1,2 @@
+Model_Name,m,k,future_k,Best_Validation_Loss,Best_Validation_Acc,Best_Test_Loss,Best_Test_Acc,Early_Stop_Patience,down_sampling,Switch_Eochs,learning_rate_initial,learning_rate_final,SMA,BOLL,MACD,RSI
+results\BTCJPY\HybridTechnicalModel\m1_k360_f120_20250428-162513,1,360,120,0.690526,0.534034,0.689024,0.540785,25,100,200,0.001,1e-05,"20, 60, 120","20, 2.0","12, 26, 9",14
