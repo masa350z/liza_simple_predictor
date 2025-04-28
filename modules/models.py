@@ -210,6 +210,72 @@ def build_lstm_cnn_attention_indicator_model(input_dim, window_sma=20, window_rs
     return model
 
 
+def build_hybrid_technical_model_(seq_len) -> tf.keras.Model:
+    """
+    入力 shape: (None, seq_len, 12)  - 正規化済みデータ
+      0   : price
+      1-6 : SMA diff 6ch
+      7-9 : Bollinger diff 3ch
+     10   : MACD diff
+     11   : RSI (-1〜+1)
+    出力: 上昇 / 下降 2クラス Softmax
+    """
+    inp = Input(shape=(seq_len, 12), name="input")
+
+    # ------------- スライス -----------------
+    price = layers.Lambda(lambda x: x[...,  0: 1])(inp)  # (B, L, 1)
+    sma = layers.Lambda(lambda x: x[...,  1: 7])(inp)  # (B, L, 6)
+    boll = layers.Lambda(lambda x: x[...,  7:10])(inp)  # (B, L, 3)
+    macd = layers.Lambda(lambda x: x[..., 10:11])(inp)  # (B, L, 1)
+    rsi = layers.Lambda(lambda x: x[..., 11:12])(inp)  # (B, L, 1)
+
+    # ------------- Price branch (Conv→GRU) -------------
+    x_p = layers.Conv1D(16, 10, padding="same", activation="relu")(price)
+    x_p = layers.Conv1D(8, 5, padding="same", activation="relu")(x_p)
+    x_p = layers.GRU(32, return_sequences=False)(x_p)
+    x_p = layers.Dense(32, activation="relu")(x_p)
+
+    # ------------- SMA branch (Conv×2→GAP) -------------
+    x_s = layers.Conv1D(32, 10, padding="same", activation="relu")(sma)
+    x_s = layers.Conv1D(16, 5, padding="same", activation="relu")(x_s)
+    x_s = layers.GlobalAveragePooling1D()(x_s)
+    x_s = layers.Dense(32, activation="relu")(x_s)
+
+    # ------------- Boll branch (軽量Conv→GAP) ----------
+    x_b = layers.Conv1D(16, 5, padding="same", activation="relu")(boll)
+    x_b = layers.GlobalAveragePooling1D()(x_b)
+    x_b = layers.Dense(32, activation="relu")(x_b)
+
+    # ------------- MACD branch (GRU) -------------------
+    x_m = layers.GRU(16, return_sequences=False)(macd)
+    x_m = layers.Dense(32, activation="relu")(x_m)
+
+    # ------------- RSI branch (Conv→GAP) ---------------
+    x_r = layers.Conv1D(16, 5, padding="same", activation="relu")(rsi)
+    x_r = layers.GlobalAveragePooling1D()(x_r)
+    x_r = layers.Dense(32, activation="relu")(x_r)
+
+    # ------------- 統合 (Add or Concat) ----------------
+    fused = layers.Add()([x_p, x_s, x_b, x_m, x_r])
+
+    # ------------- 全結合ヘッド ------------------------
+    x = layers.BatchNormalization()(fused)
+    x = layers.Dropout(0.2)(x)
+    x = layers.Dense(64, activation="relu")(x)
+    x = layers.Dropout(0.2)(x)
+    x = layers.Dense(32, activation="relu")(x)
+
+    out = layers.Dense(2, activation="softmax", name="direction")(x)
+
+    model = Model(inputs=inp, outputs=out, name="Hybrid_TISplit_Model")
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(1e-3),
+        loss="categorical_crossentropy",
+        metrics=["accuracy"]
+    )
+    return model
+
+
 def build_hybrid_technical_model(seq_len) -> tf.keras.Model:
     """
     入力 shape: (None, seq_len, 12)  - 正規化済みデータ

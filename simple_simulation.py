@@ -1,4 +1,5 @@
 # %%
+import h5py
 from modules.trainer import Trainer
 from technical_funcs import calc_sma, calc_bollinger_bands, calc_macd, calc_rsi
 import tensorflow as tf
@@ -147,70 +148,6 @@ def split_data(data, train_ratio=0.6, valid_ratio=0.2):
     return train_data, valid_data, test_data
 
 
-def save_csv(best_val_loss, best_val_acc, best_test_loss, best_test_acc):
-    # === 5. 保存用フォルダ作成 & 結果出力 ===
-    # サブディレクトリ: "results/{pair}/{ModelClass}_{YYYYMMDD-HHMMSS}/"
-    now_str = datetime.now().strftime("%Y%m%d-%H%M%S")
-
-    # ディレクトリ名に k, future_k の値を埋め込む
-    model_name = f"m{m}_k{k}_f{p}_{now_str}"
-    output_dir = os.path.join(
-        "results",
-        pair,
-        model_class_name,
-        model_name
-    )
-    os.makedirs(output_dir, exist_ok=True)
-
-    # bestモデルの重み保存
-    best_weights_path = os.path.join(output_dir, "best_model.weights.h5")
-    trainer.save_best_weights(best_weights_path)
-
-    # === 6. 結果をCSVにまとめて出力 ===
-    csv_path = os.path.join(
-        "results", pair, f"training_results_{model_class_name}.csv")
-
-    # ディレクトリが存在しない場合は作成
-    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
-
-    # ファイルが存在するかチェック
-    file_exists = os.path.isfile(csv_path)
-
-    # CSVに記録する情報を整理
-    csv_row = {
-        'Model_Name': output_dir,
-        'm': m,
-        'k': k,
-        'future_k': p,
-        'Best_Validation_Loss': f"{best_val_loss:.6f}",
-        'Best_Validation_Acc': f"{best_val_acc:.6f}",
-        'Best_Test_Loss': f"{best_test_loss:.6f}",
-        'Best_Test_Acc': f"{best_test_acc:.6f}",
-        'Early_Stop_Patience': trainer.early_stop_patience,
-        'down_sampling': skip_num,
-        'Switch_Eochs': switch_epoch,
-        'learning_rate_initial': learning_rate_initial,
-        'learning_rate_final': learning_rate_final,
-        'SMA': f"{sma_short_window}, {sma_mid_window}, {sma_long_window}",
-        'BOLL': f"{bollinger_band_window}, {bollinger_band_sigma}",
-        'MACD': f"{macd_short_window}, {macd_long_window}, {macd_signal_window}",
-        'RSI': f"{rsi_window}",
-    }
-
-    # CSVに書き込み（存在しない場合はヘッダーも書き込み）
-    with open(csv_path, 'a', newline='', encoding='utf-8') as csvfile:
-        fieldnames = list(csv_row.keys())
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-
-        # ファイルが存在しない場合はヘッダーを書き込む
-        if not file_exists:
-            writer.writeheader()
-
-        writer.writerow(csv_row)
-
-    print(f"[INFO] Summary results appended to: {csv_path}")
-
-
 # %%
 m = 1
 pair = "BTCJPY"
@@ -260,40 +197,29 @@ train_x, valid_x, test_x = split_data(
 train_y, valid_y, test_y = split_data(
     data_y, train_ratio=train_ratio, valid_ratio=valid_ratio)
 
-train_x, train_y = _balance_up_down(train_x, train_y)
-valid_x, valid_y = _balance_up_down(valid_x, valid_y)
-test_x, test_y = _balance_up_down(test_x, test_y)
 # %%
-skip_num = 20
+model.load_weights(
+    'results/BTCJPY/HybridTechnicalModel/m1_k180_f60_20250428-182725/best_model.weights.h5')
 
-train_x = train_x[::skip_num]
-train_y = train_y[::skip_num]
-valid_x = valid_x[::skip_num]
-valid_y = valid_y[::skip_num]
-test_x = test_x[::skip_num]
-test_y = test_y[::skip_num]
 # %%
-print("[INFO] Starting training process...")
 
-learning_rate_initial = 1e-3
-learning_rate_final = 1e-5
-switch_epoch = 200
+# 読み込む
+filename = 'results/BTCJPY/HybridTechnicalModel/m1_k180_f60_20250428-182725/best_model.weights.h5'
 
-while True:
-    trainer = Trainer(
-        model=model,
-        train_data=(train_x, train_y),
-        valid_data=(valid_x, valid_y),
-        test_data=(test_x, test_y),
-        learning_rate_initial=learning_rate_initial,
-        learning_rate_final=learning_rate_final,
-        switch_epoch=switch_epoch,         # 学習率を切り替えるステップ数
-        max_epochs=10000,
-        batch_size=10000,
-        early_stop_patience=25
-    )
+with h5py.File(filename, 'r') as f:
+    # 最上位の構造を見る
+    print("[Top level keys]", list(f.keys()))
 
-    best_val_loss, best_val_acc, best_test_loss, best_test_acc = trainer.run()
-    print("[INFO] Training finished.")
+    # モデルの重みグループを覗く
+    model_weights = f['model_weights']
+    print("\n[Saved layers]")
+    for layer_name in model_weights.keys():
+        print(f" - {layer_name}")
 
-    save_csv(best_val_loss, best_val_acc, best_test_loss, best_test_acc)
+        # レイヤー内の重み一覧を覗く
+        layer = model_weights[layer_name]
+        for weight_name in layer.keys():
+            weight_array = layer[weight_name][()]
+            print(f"    > {weight_name}: shape={weight_array.shape}")
+
+# %%
