@@ -1,0 +1,7 @@
+Model_Name,m,k,future_k,Rik_Up,Son_Up,Rik_Dn,Son_Dn,Up_Thresh,Down_Thresh,Final_Kane
+results/BTCJPY/HybridTechnicalModel/m2_k360_f120_20250429-221827,2,360,120,0.1,0.05,0.06,0.15,0.505,0.5,7.543751
+results/BTCJPY/HybridTechnicalModel/simulation_results/m2_k360_f120_20250429-122028,2,360,120,0.1,0.05,0.06,0.15,0.505,0.5,7.543751
+results/BTCJPY/HybridTechnicalModel/00_simulation_results,2,360,120,0.1,0.05,0.06,0.15,0.505,0.5,7.543751
+results/BTCJPY/HybridTechnicalModel/00_simulation_results,2,360,120,0.1,0.05,0.06,0.15,0.505,0.5,7.543751
+results/BTCJPY/HybridTechnicalModel/00_simulation_results,2,360,120,0.1,0.05,0.06,0.15,0.505,0.5,7.543751
+results/BTCJPY/HybridTechnicalModel/simulation_results,2,360,120,0.1,0.05,0.06,0.15,0.505,0.5,7.543751

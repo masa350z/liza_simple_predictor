@@ -1,4 +1,6 @@
 # %%
+import matplotlib.pyplot as plt
+import csv
 from tqdm import tqdm
 from technical_funcs import calc_sma, calc_bollinger_bands, calc_macd, calc_rsi
 import tensorflow as tf
@@ -8,6 +10,7 @@ import pandas as pd
 from datetime import datetime
 from modules.data_loader import load_csv_data
 from modules.models import build_hybrid_technical_model
+import matplotlib.pyplot as plt
 
 # 必要な分だけGPUメモリを確保する
 gpus = tf.config.list_physical_devices('GPU')
@@ -116,7 +119,6 @@ def build_dataset_with_normalization_in_batches(input_array,
 
         # 正規化 (in-place)
         prices = batch_data[:, :, 0]                             # (B, k)
-        print(prices)
         mean_p = np.mean(prices, axis=1, keepdims=True)          # (B, 1)
         std_p = np.std(prices, axis=1, keepdims=True) + eps      # (B, 1)
 
@@ -193,135 +195,217 @@ def print_accuracy_ratio(pred, label,
     print(f'accuracy_ratio_down: {accuracy_ratio_down}')
 
 
+def print_all_results(data_x, model, train_ratio=0.6, valid_ratio=0.2):
+    train_x, valid_x, test_x = split_data(
+        data_x, train_ratio=train_ratio, valid_ratio=valid_ratio)
+    train_y, valid_y, test_y = split_data(
+        data_y, train_ratio=train_ratio, valid_ratio=valid_ratio)
+
+    pred_train = predict_in_batches(model, train_x, batch_size=8000)
+    pred_valid = predict_in_batches(model, valid_x, batch_size=8000)
+    pred_test = predict_in_batches(model, test_x, batch_size=8000)
+
+    print_accuracy_ratio(pred_train, train_y)
+    print('==========================')
+    print_accuracy_ratio(pred_valid, valid_y)
+    print('==========================')
+    print_accuracy_ratio(pred_test, test_y)
+    print('==========================')
+
+
+def run_simulation(row_prices, pred_all, max_hold_count,
+                   rik_up, son_up, rik_dn, son_dn,
+                   up_thresh_hold=0.5, down_thresh_hold=0.5, spread=0.03/100):
+    kane = 0
+    asset = []
+    position = 0
+    previous_position = 0
+    get_price = 0
+    count = 0
+
+    for i in tqdm(range(len(pred_all))):
+        if count > 0:
+            count -= 1
+
+            if count == 0:
+                kane += (row_prices[i] - get_price)*position/get_price
+                position = 0
+            else:
+                if position == 1:
+                    if (row_prices[i]/get_price - 1 > rik_up) or (row_prices[i]/get_price - 1 < -son_up):
+                        position = 0
+                        kane += (row_prices[i] - get_price)/get_price
+
+                elif position == -1:
+                    if (get_price/row_prices[i] - 1 > rik_dn) or (get_price/row_prices[i] - 1 < -son_dn):
+                        position = 0
+                        kane += (get_price - row_prices[i])/get_price
+
+        if position == 0:
+            if pred_all[i, 0] > up_thresh_hold:
+                position = 1
+                get_price = row_prices[i]
+                count = max_hold_count
+            elif pred_all[i, 1] > down_thresh_hold:
+                position = -1
+                get_price = row_prices[i]
+                count = max_hold_count
+
+        if position != previous_position:
+            kane -= row_prices[i]*spread/get_price
+        previous_position = position
+
+        asset.append(kane)
+
+    asset = np.array(asset)
+
+    return kane, asset
+
+
+def save_simulation_result(pair: str,
+                           model_class_name: str,
+                           model_name: str,
+                           m: int, k: int, p: int,
+                           rik_up: float, son_up: float,
+                           rik_dn: float, son_dn: float,
+                           up_thresh_hold: float, down_thresh_hold: float,
+                           final_kane: float,
+                           asset_array: np.ndarray):
+    """シミュレーション結果の保存(CSV+グラフ画像)
+
+    Args:
+        pair (str): 通貨ペア(例: "BTCJPY")
+        model_class_name (str): モデルクラス名(例: "HybridTechnicalModel")
+        model_path_name (str): モデルパス名
+        m (int): ダウンサンプリング間隔
+        k (int): 入力系列長
+        p (int): 未来予測系列長
+        rik_up, son_up, rik_dn, son_dn (float): 利確・損切り閾値
+        up_thresh_hold, down_thresh_hold (float): 上昇/下降の判定閾値
+        final_kane (float): 最終損益
+        asset_array (np.ndarray): 時系列の資産推移(float可)
+    """
+    output_dir = os.path.join(
+        "results", pair, model_class_name, "simulation_results")
+    os.makedirs(output_dir, exist_ok=True)
+
+    # === 資産推移保存 (float16 CSV) ===
+    asset_csv_path = os.path.join(output_dir, f"{model_name}_asset_curve.csv")
+    df_asset = pd.DataFrame(asset_array.astype(np.float16), columns=["asset"])
+    df_asset.to_csv(asset_csv_path, index=False)
+
+    # === 資産推移グラフ保存 (PNG) ===
+    asset_png_path = os.path.join(output_dir, f"{model_name}_asset_curve.png")
+    plt.figure(figsize=(12, 9))
+    plt.plot(asset_array, label="Asset Curve")
+    plt.title("Asset Over Time")
+    plt.xlabel("Time")
+    plt.ylabel("Asset")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(asset_png_path)
+    plt.close()
+
+    # === 結果要約をCSVに追記 ===
+    summary_csv_path = os.path.join(
+        "results", pair, f"simulation_results_{model_class_name}.csv")
+    os.makedirs(os.path.dirname(summary_csv_path), exist_ok=True)
+    file_exists = os.path.isfile(summary_csv_path)
+
+    csv_row = {
+        'Model_Name': output_dir,
+        'm': m,
+        'k': k,
+        'future_k': p,
+        'Rik_Up': rik_up,
+        'Son_Up': son_up,
+        'Rik_Dn': rik_dn,
+        'Son_Dn': son_dn,
+        'Up_Thresh': up_thresh_hold,
+        'Down_Thresh': down_thresh_hold,
+        'Final_Kane': f"{final_kane:.6f}",
+    }
+
+    with open(summary_csv_path, 'a', newline='', encoding='utf-8') as csvfile:
+        fieldnames = list(csv_row.keys())
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(csv_row)
+
+    print(f"[INFO] Simulation result saved to: {output_dir}")
+    print(f"[INFO] Asset curve saved: {asset_csv_path}")
+    print(f"[INFO] Asset plot saved: {asset_png_path}")
+    print(f"[INFO] Summary appended to: {summary_csv_path}")
+
+
 # %%
-m = 2
 pair = "BTCJPY"
 csv_file_name = f"sample_{pair}_1m.csv"
 csv_file_path = os.path.join("data", csv_file_name)
 
+m = 2
 k = 360
 p = 120
 
-sma_short_window = 20
-sma_mid_window = 60
-sma_long_window = 120
-
-bollinger_band_window = 20
-bollinger_band_sigma = 2.0
-
-
-macd_short_window = 12
-macd_long_window = 26
-macd_signal_window = 9
-
-rsi_window = 14
-
-model_class_name = "HybridTechnicalModel"
 model = build_hybrid_technical_model(seq_len=k)
+
+model_path_base = 'results/BTCJPY/HybridTechnicalModel/weights/'
+# model_name = 'm1_k360_f120_20250428-103133'
+# model_name = 'm1_k360_f120_20250428-102353'
+# model_name = 'm1_k360_f240_20250429-114844'
+model_name = 'm2_k360_f120_20250429-122028'
+model_path_name = model_path_base + model_name
+model.load_weights(model_path_name + '/best_model.weights.h5')
 
 _, prices_ = load_csv_data(csv_file_path, skip=1)
 prices = np.array(prices_, dtype=np.float32)[::m]
 data_x, data_y = make_hybrid_technical_model_data(prices,
                                                   k, p,
-                                                  sma_short_window,
-                                                  sma_mid_window,
-                                                  sma_long_window,
-                                                  bollinger_band_window,
-                                                  bollinger_band_sigma,
-                                                  macd_short_window,
-                                                  macd_long_window,
-                                                  macd_signal_window,
-                                                  rsi_window
+                                                  sma_short_window=20,
+                                                  sma_mid_window=60,
+                                                  sma_long_window=120,
+                                                  bollinger_band_window=20,
+                                                  bollinger_band_sigma=2.0,
+                                                  macd_short_window=12,
+                                                  macd_long_window=26,
+                                                  macd_signal_window=9,
+                                                  rsi_window=14
                                                   )
 row_prices = prices[k-1:-p-1]
+
+# print_all_results(data_x, model)
+
+pred_all = predict_in_batches(model, data_x, batch_size=8000)
 # %%
-train_ratio = 0.6
-valid_ratio = 0.2
-
-train_x, valid_x, test_x = split_data(
-    data_x, train_ratio=train_ratio, valid_ratio=valid_ratio)
-train_y, valid_y, test_y = split_data(
-    data_y, train_ratio=train_ratio, valid_ratio=valid_ratio)
-
-# %%
-model_path_base = 'results/BTCJPY/HybridTechnicalModel/{}/best_model.weights.h5'
-# model_name = 'm1_k360_f120_20250428-103133'
-# model_name = 'm1_k360_f120_20250428-102353'
-# model_name = 'm1_k360_f240_20250429-114844'
-model_name = 'm2_k360_f120_20250429-122028'
-
-model.load_weights(model_path_base.format(model_name))
-# %%
-pred_train = predict_in_batches(model, train_x, batch_size=8000)
-pred_valid = predict_in_batches(model, valid_x, batch_size=8000)
-pred_test = predict_in_batches(model, test_x, batch_size=8000)
-
-print_accuracy_ratio(pred_train, train_y)
-print('==========================')
-print_accuracy_ratio(pred_valid, valid_y)
-print('==========================')
-print_accuracy_ratio(pred_test, test_y)
-print('==========================')
-
-pred_all = np.concatenate([pred_train, pred_valid, pred_test], axis=0)
-# %%
-kane = 0
-asset = []
-position = 0
-previous_position = 0
-get_price = 0
-count = 0
-
-spread = 0.03/100
 max_hold_count = 240
 
-rik_up = 10/100
-son_up = 5/100
-
-rik_dn = 6/100
-son_dn = 15/100
-
+rik_up, son_up = 10/100, 5/100
+rik_dn, son_dn = 6/100, 15/100
 
 up_thresh_hold = 0.505
 down_thresh_hold = 0.5
 
-for i in tqdm(range(len(pred_all))):
-    if count > 0:
-        count -= 1
 
-        if count == 0:
-            kane += (row_prices[i] - get_price)*position/get_price
-            position = 0
-        else:
-            if position == 1:
-                if (row_prices[i]/get_price - 1 > rik_up) or (row_prices[i]/get_price - 1 < -son_up):
-                    position = 0
-                    kane += (row_prices[i] - get_price)/get_price
-
-            elif position == -1:
-                if (get_price/row_prices[i] - 1 > rik_dn) or (get_price/row_prices[i] - 1 < -son_dn):
-                    position = 0
-                    kane += (get_price - row_prices[i])/get_price
-
-    if position == 0:
-        if pred_all[i, 0] > up_thresh_hold:
-            position = 1
-            get_price = row_prices[i]
-            count = max_hold_count
-        elif pred_all[i, 1] > down_thresh_hold:
-            position = -1
-            get_price = row_prices[i]
-            count = max_hold_count
-
-    if position != previous_position:
-        kane -= row_prices[i]*spread/get_price
-    previous_position = position
-
-    asset.append(kane)
-
-asset = np.array(asset)
+kane, asset = run_simulation(row_prices, pred_all, max_hold_count,
+                             rik_up, son_up, rik_dn, son_dn,
+                             up_thresh_hold, down_thresh_hold, spread=0.03/100)
 
 
 pd.DataFrame(asset).plot()
 print(kane)
+# %%
+
+# %%
+save_simulation_result(pair=pair,
+                       model_class_name="HybridTechnicalModel",
+                       model_name=model_name,
+                       m=m, k=k, p=p,
+                       rik_up=rik_up, son_up=son_up,
+                       rik_dn=rik_dn, son_dn=son_dn,
+                       up_thresh_hold=up_thresh_hold,
+                       down_thresh_hold=down_thresh_hold,
+                       final_kane=kane,
+                       asset_array=asset)
+
 # %%

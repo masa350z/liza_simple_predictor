@@ -158,6 +158,7 @@ def save_csv(best_val_loss, best_val_acc, best_test_loss, best_test_acc):
         "results",
         pair,
         model_class_name,
+        "weights",
         model_name
     )
     os.makedirs(output_dir, exist_ok=True)
@@ -212,7 +213,7 @@ def save_csv(best_val_loss, best_val_acc, best_test_loss, best_test_acc):
 
 
 # %%
-m = 2
+m = 3
 pair = "BTCJPY"
 csv_file_name = f"sample_{pair}_1m.csv"
 csv_file_path = os.path.join("data", csv_file_name)
