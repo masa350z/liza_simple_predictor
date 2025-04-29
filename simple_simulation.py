@@ -1,14 +1,12 @@
 # %%
-import h5py
-from modules.trainer import Trainer
+from tqdm import tqdm
 from technical_funcs import calc_sma, calc_bollinger_bands, calc_macd, calc_rsi
 import tensorflow as tf
-import csv
 import os
 import numpy as np
+import pandas as pd
 from datetime import datetime
 from modules.data_loader import load_csv_data
-from modules.dataset import _balance_up_down
 from modules.models import build_hybrid_technical_model
 
 # 必要な分だけGPUメモリを確保する
@@ -72,6 +70,7 @@ def make_hybrid_technical_model_data(prices,
     )
 
     return normed_array, label_array
+    # return input_array, _
 
 
 def build_dataset_with_normalization_in_batches(input_array,
@@ -117,6 +116,7 @@ def build_dataset_with_normalization_in_batches(input_array,
 
         # 正規化 (in-place)
         prices = batch_data[:, :, 0]                             # (B, k)
+        print(prices)
         mean_p = np.mean(prices, axis=1, keepdims=True)          # (B, 1)
         std_p = np.std(prices, axis=1, keepdims=True) + eps      # (B, 1)
 
@@ -148,14 +148,59 @@ def split_data(data, train_ratio=0.6, valid_ratio=0.2):
     return train_data, valid_data, test_data
 
 
+def predict_in_batches(model, input_data, batch_size=1024):
+    """モデルでミニバッチ推論を行い、結果を結合してNumPy配列として返す。
+
+    Args:
+        model (tf.keras.Model): 推論に使用するモデル
+        input_data (np.ndarray or tf.Tensor): 入力データ (shape: [N, ...])
+        batch_size (int, optional): ミニバッチサイズ (default=1024)
+
+    Returns:
+        np.ndarray: 結合された全推論結果 (shape: [N, クラス数])
+    """
+    total_size = len(input_data)
+    predictions = []
+
+    for start in range(0, total_size, batch_size):
+        end = min(start + batch_size, total_size)
+        batch = input_data[start:end]
+        preds = model(batch, training=False)  # training=False で推論モード
+        predictions.append(preds.numpy())     # Tensor → NumPyに変換して蓄積
+
+    return np.concatenate(predictions, axis=0)
+
+
+def print_accuracy_ratio(pred, label,
+                         up_thresh_hold=0.5,
+                         down_thresh_hold=0.5):
+    up_ = label[:, 0]
+    down_ = label[:, 1]
+
+    long_position = 1*(pred[:, 0] > up_thresh_hold)
+    short_position = 1*(pred[:, 1] > down_thresh_hold)
+
+    long_position_count = np.sum(long_position)
+    short_position_count = np.sum(short_position)
+
+    accuracy_ratio_up = np.sum(long_position*up_)/np.sum(long_position)
+    accuracy_ratio_down = np.sum(short_position*down_)/np.sum(short_position)
+
+    print(f'long_position_count: {long_position_count}')
+    print(f'short_position_count: {short_position_count}')
+
+    print(f'accuracy_ratio_up: {accuracy_ratio_up}')
+    print(f'accuracy_ratio_down: {accuracy_ratio_down}')
+
+
 # %%
-m = 1
+m = 2
 pair = "BTCJPY"
 csv_file_name = f"sample_{pair}_1m.csv"
 csv_file_path = os.path.join("data", csv_file_name)
 
-k = 180
-p = 60
+k = 360
+p = 120
 
 sma_short_window = 20
 sma_mid_window = 60
@@ -188,7 +233,8 @@ data_x, data_y = make_hybrid_technical_model_data(prices,
                                                   macd_signal_window,
                                                   rsi_window
                                                   )
-
+row_prices = prices[k-1:-p-1]
+# %%
 train_ratio = 0.6
 valid_ratio = 0.2
 
@@ -198,28 +244,84 @@ train_y, valid_y, test_y = split_data(
     data_y, train_ratio=train_ratio, valid_ratio=valid_ratio)
 
 # %%
-model.load_weights(
-    'results/BTCJPY/HybridTechnicalModel/m1_k180_f60_20250428-182725/best_model.weights.h5')
+model_path_base = 'results/BTCJPY/HybridTechnicalModel/{}/best_model.weights.h5'
+# model_name = 'm1_k360_f120_20250428-103133'
+# model_name = 'm1_k360_f120_20250428-102353'
+# model_name = 'm1_k360_f240_20250429-114844'
+model_name = 'm2_k360_f120_20250429-122028'
 
+model.load_weights(model_path_base.format(model_name))
 # %%
+pred_train = predict_in_batches(model, train_x, batch_size=8000)
+pred_valid = predict_in_batches(model, valid_x, batch_size=8000)
+pred_test = predict_in_batches(model, test_x, batch_size=8000)
 
-# 読み込む
-filename = 'results/BTCJPY/HybridTechnicalModel/m1_k180_f60_20250428-182725/best_model.weights.h5'
+print_accuracy_ratio(pred_train, train_y)
+print('==========================')
+print_accuracy_ratio(pred_valid, valid_y)
+print('==========================')
+print_accuracy_ratio(pred_test, test_y)
+print('==========================')
 
-with h5py.File(filename, 'r') as f:
-    # 最上位の構造を見る
-    print("[Top level keys]", list(f.keys()))
+pred_all = np.concatenate([pred_train, pred_valid, pred_test], axis=0)
+# %%
+kane = 0
+asset = []
+position = 0
+previous_position = 0
+get_price = 0
+count = 0
 
-    # モデルの重みグループを覗く
-    model_weights = f['model_weights']
-    print("\n[Saved layers]")
-    for layer_name in model_weights.keys():
-        print(f" - {layer_name}")
+spread = 0.03/100
+max_hold_count = 240
 
-        # レイヤー内の重み一覧を覗く
-        layer = model_weights[layer_name]
-        for weight_name in layer.keys():
-            weight_array = layer[weight_name][()]
-            print(f"    > {weight_name}: shape={weight_array.shape}")
+rik_up = 10/100
+son_up = 5/100
 
+rik_dn = 6/100
+son_dn = 15/100
+
+
+up_thresh_hold = 0.505
+down_thresh_hold = 0.5
+
+for i in tqdm(range(len(pred_all))):
+    if count > 0:
+        count -= 1
+
+        if count == 0:
+            kane += (row_prices[i] - get_price)*position/get_price
+            position = 0
+        else:
+            if position == 1:
+                if (row_prices[i]/get_price - 1 > rik_up) or (row_prices[i]/get_price - 1 < -son_up):
+                    position = 0
+                    kane += (row_prices[i] - get_price)/get_price
+
+            elif position == -1:
+                if (get_price/row_prices[i] - 1 > rik_dn) or (get_price/row_prices[i] - 1 < -son_dn):
+                    position = 0
+                    kane += (get_price - row_prices[i])/get_price
+
+    if position == 0:
+        if pred_all[i, 0] > up_thresh_hold:
+            position = 1
+            get_price = row_prices[i]
+            count = max_hold_count
+        elif pred_all[i, 1] > down_thresh_hold:
+            position = -1
+            get_price = row_prices[i]
+            count = max_hold_count
+
+    if position != previous_position:
+        kane -= row_prices[i]*spread/get_price
+    previous_position = position
+
+    asset.append(kane)
+
+asset = np.array(asset)
+
+
+pd.DataFrame(asset).plot()
+print(kane)
 # %%

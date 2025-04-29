@@ -212,13 +212,13 @@ def save_csv(best_val_loss, best_val_acc, best_test_loss, best_test_acc):
 
 
 # %%
-m = 1
+m = 2
 pair = "BTCJPY"
 csv_file_name = f"sample_{pair}_1m.csv"
 csv_file_path = os.path.join("data", csv_file_name)
 
-k = 180
-p = 60
+k = 360
+p = 90
 
 sma_short_window = 20
 sma_mid_window = 60
@@ -289,7 +289,7 @@ while True:
         learning_rate_final=learning_rate_final,
         switch_epoch=switch_epoch,         # 学習率を切り替えるステップ数
         max_epochs=10000,
-        batch_size=10000,
+        batch_size=4000,
         early_stop_patience=25
     )
 

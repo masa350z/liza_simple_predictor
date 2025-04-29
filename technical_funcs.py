@@ -33,7 +33,7 @@ def calc_sma(prices, window=20):
         else:
             sma[i] = (cumsum[i] - cumsum[i - window]) / window
 
-    return sma
+    return sma.astype(np.float32)
 
 
 def calc_bollinger_bands(prices, window=20, multi=2.0):
@@ -73,7 +73,7 @@ def calc_bollinger_bands(prices, window=20, multi=2.0):
     upper = center + multi * rolling_std
     lower = center - multi * rolling_std
 
-    return center, upper, lower
+    return center.astype(np.float32), upper.astype(np.float32), lower.astype(np.float32)
 
 
 def calc_macd(prices, short_window=12, long_window=26, signal_window=9):
@@ -134,7 +134,7 @@ def calc_macd(prices, short_window=12, long_window=26, signal_window=9):
     macd_line_scaled = macd_line_final + p_mean
     signal_line_scaled = signal_line_final + p_mean
 
-    return macd_line_scaled, signal_line_scaled
+    return macd_line_scaled.astype(np.float32), signal_line_scaled.astype(np.float32)
 
 
 def calc_rsi(prices, window=14):
@@ -177,4 +177,4 @@ def calc_rsi(prices, window=14):
         rs = avg_gain / (avg_loss + 1e-8)
         rsi_arr[i] = 100.0 - (100.0 / (1.0 + rs))
 
-    return rsi_arr
+    return rsi_arr.astype(np.float32)
